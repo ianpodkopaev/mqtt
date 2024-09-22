@@ -7,24 +7,6 @@
             "LightPower": 1,
             "Interval": 1,
             "RFChannel": 1
-        },
-        {
-            "Timestamp": 2,
-            "Longitude": 2,
-            "Latitude": 2,
-            "LightPower": 2
-        },
-        {
-            "Timestamp": 3,
-            "Longitude": 3.3,
-            "Latitude": -3.3,
-            "RFChannel": 3
-        },
-        {
-            "Timestamp": 4,
-            "Longitude": 4,
-            "Latitude": 4,
-            "RFChannel": 4
         }
     ]
 }
