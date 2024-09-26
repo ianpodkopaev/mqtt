@@ -1,21 +1,20 @@
 import paho.mqtt.client as mqtt
 import json
 import time
+import threading
 
 # Define the MQTT broker details
 broker = 'localhost'
 port = 1883
-
+timed_publishing = False  # Global flag for timed publishing
 
 # Callback when the client receives a CONNACK response from the server
 def on_connect(client, userdata, flags, rc):
     print(f"Connected with result code {rc}")
 
-
 # Callback when a PUBLISH message is received from the server
 def on_message(client, userdata, msg):
     print(f"Message received from topic {msg.topic}: {msg.payload.decode()}")
-
 
 # Create a new MQTT client instance
 client = mqtt.Client()
@@ -50,9 +49,8 @@ print("1. Publish to all topics")
 print("2. Choose one topic")
 print("3. Enter a range of topics (e.g., 'from-to')")
 print("4. Publish to specific tags (e.g., 'tag1,tag2,...')")
-
-option = input("Enter your choice (1, 2, 3, or 4): ").strip()
-
+print("5. Toggle timed publishing (on/off)")
+option = input("Enter your choice (1, 2, 3, 4, or 5): ").strip()
 
 # Function to subscribe to and publish to specific tags
 def subscribe_and_publish_to_tags(selected_tags):
@@ -72,6 +70,45 @@ def subscribe_and_publish_to_tags(selected_tags):
             print(f"Payload: {json.dumps(cleaned_payload, indent=4)}")
         time.sleep(1)
 
+# Function to toggle timed publishing on/off
+def toggle_timed_publishing():
+    global timed_publishing
+    if not timed_publishing:
+        print("Timed publishing is now ON.")
+        timed_publishing = True
+        threading.Thread(target=timed_publish, args=(client,), daemon=True).start()  # Start timed publishing in a thread
+    else:
+        print("Timed publishing is now OFF.")
+        timed_publishing = False  # This will stop the timed_publish loop
+
+# Function to handle timed publishing every minute (adjustable)
+def timed_publish(client):
+    global timed_publishing
+    print("Timed publishing started.")
+
+    # Interval selection
+    interval = 60  # Default to 1 minute
+    custom_interval = input("Enter custom interval (in seconds): ").strip()
+    try:
+        interval = int(custom_interval)
+    except ValueError:
+        print("Invalid custom interval. Using default 60 seconds.")
+
+    while timed_publishing:
+        for tag in tags:  # Iterate through all tags
+            config_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/config"
+            for payload in payloads:  # Iterate through the list of payloads
+                if isinstance(payload, dict):  # Ensure it's a dictionary
+                    message = json.dumps(payload)
+                    client.publish(config_topic, message)
+                    print(f"Published timed message to {config_topic}: {message}")
+
+                # Check if timed publishing has been turned off
+                if not timed_publishing:
+                    print("Timed publishing has been stopped.")
+                    return  # Exit the function if stopped
+
+            time.sleep(interval)  # Sleep after publishing all payloads for the current tag
 
 # Handle the user's choice
 if option == "1":
@@ -124,16 +161,12 @@ elif option == "4":
         print(f"Subscribing and publishing to selected tags: {', '.join(selected_tags)}")
         subscribe_and_publish_to_tags(selected_tags)
 
+elif option == "5":
+    toggle_timed_publishing()
+
 else:
     print("Invalid option selected.")
     exit(1)
 
-# Blocking loop to process network traffic, dispatch callbacks, and handle reconnecting
-client.loop_start()
-
-# Run for a few seconds to allow messages to be processed
-time.sleep(5)
-
-# Stop the loop and disconnect
-client.loop_stop()
-client.disconnect()
+# Keep the MQTT client running indefinitely
+client.loop_forever()

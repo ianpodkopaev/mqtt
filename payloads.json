@@ -1,12 +1,8 @@
 {
     "payloads": [
         {
-            "Timestamp": 1,
-            "Longitude": 1,
-            "Latitude": 1,
-            "LightPower": 1,
-            "Interval": 1,
-            "RFChannel": 1
+            "config": 1
+
         }
     ]
 }

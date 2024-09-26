@@ -1,7 +1,7 @@
 {
     "payloads": [
 
-        {"Voltage": 380, "ActPower": 623, "Voltage_1": 210, "LightPower": 100, "DeviceMode": 1}
+        {"Voltage": 1, "ActPower": 1, "Voltage_1": 1, "LightPower": 1, "DeviceMode": 1}
 
     ]
 }
