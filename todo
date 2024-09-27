@@ -1,2 +1,4 @@
-grab from config - publish to response, not just reprint
-
+clean up docker-compose
+fix config to non-core (cycle loop)
+test request non-core
+test act_value non-core, cuz i dont get a ton of "posted to tag1,2,3,4" console messages
