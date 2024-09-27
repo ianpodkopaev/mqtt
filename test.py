@@ -11,6 +11,7 @@ port = 1883
 # Global flags for stopping the script and timed publishing
 running = True
 timed_publishing = False
+publish_interval = 60  # Default interval (in seconds) for timed publishing
 
 # Load the payload data from the file (pisat.json for act_value and d2meshdata.json for act_value)
 try:
@@ -31,16 +32,18 @@ except FileNotFoundError as e:
     print(f"Error: Could not find 'generated_topics.txt' file: {e}")
     exit(1)
 
+
 # Callback when the client receives a CONNACK response from the server
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Successfully connected to the broker.")
+
         # Subscribe to core topics (config, request, response)
         client.subscribe("d2mesh/gate2DB48EC0/config")
         client.subscribe("d2mesh/gate2DB48EC0/response")
         client.subscribe("d2mesh/gate2DB48EC0/request")
 
-        # Also subscribe to lightpost topics for each tag
+        # Subscribe to non-core (lightpost) topics for each tag
         for tag in tags:
             config_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/config"
             response_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/response"
@@ -50,13 +53,14 @@ def on_connect(client, userdata, flags, rc):
             client.subscribe(request_topic)
 
         print("Subscribed to core topics and lightpost topics for each tag.")
+
         try:
             with open("d2meshdata.json", "r") as f:
                 act_value_data = json.load(f)
 
             # Publish only the inner act_value data to the response topic
             client.publish("d2mesh/gate2DB48EC0/act_value", json.dumps(act_value_data.get("act_value", {})))
-            print("Published act_value data on startup:")
+            print("Published act_value data on startup")
 
         except FileNotFoundError:
             print("Error: d2meshdata.json file not found.")
@@ -70,43 +74,98 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     print(f"Message received from {msg.topic}: {msg.payload.decode()}")
 
-    # Automatically copy the message from config topic to the response topic and update act_value data
-    if msg.topic == "d2mesh/gate2DB48EC0/config":
+    # Parse payload as JSON
+    try:
         config_payload = json.loads(msg.payload.decode())
+    except json.JSONDecodeError:
+        print(f"Failed to decode JSON from {msg.topic}")
+        return
 
-        # Load current act_value data from the file
-        with open("d2meshdata.json", "r") as f:
-            act_value_data = json.load(f)
+    # Split topic to determine base and tag (if any)
+    topic_parts = msg.topic.split('/')
+    topic_base = '/'.join(topic_parts[:-1])  # Base topic without the last part
+    tag = topic_parts[3] if "lightpost" in topic_parts else None  # Get the tag if it's a non-core topic
 
-        # Create a new dictionary for act_value instead of using the 'payloads' key
-        act_value = {}
-
-        # Update the act_value data with the new values from the config message
-        for key, value in config_payload.items():
-            act_value[key] = value
-
-        # Save the updated act_value data back to the file
-        with open("d2meshdata.json", "w") as f:
-            json.dump({"act_value": act_value}, f, indent=4)
-
-        # Print the updated act_value data
-        print(f"Updated act_value data: {json.dumps(act_value, indent=4)}")
-
-        # Publish the updated act_value data to the act_value topic
-        act_value_topic = "d2mesh/gate2DB48EC0/act_value"
-        client.publish(act_value_topic, json.dumps(act_value))
-        print(f"Published updated act_value data to {act_value_topic}")
-
-        # Publish the config message to the response topic
-        client.publish("d2mesh/gate2DB48EC0/response", msg.payload)
-        print("Copied config message to response topic and updated act_value")
-
-    # Handle request message and extract variable names from it
-    elif msg.topic == "d2mesh/gate2DB48EC0/request":
+    # Function to handle config messages
+    def handle_config_message(config_payload, topic_base, tag=None):
         try:
-            request_payload = json.loads(msg.payload.decode())
+            if tag:  # Non-core topics (lightpost)
+                # Load pisat.json for non-core topics
+                with open("pisat.json", "r") as f:
+                    pisat_data = json.load(f)
 
-            # Expecting the payload to be a list of variables (e.g., ["Timestamp", "Longitude"])
+                # Check if the tag exists, if not initialize it
+                if tag not in pisat_data:
+                    pisat_data[tag] = {}  # Initialize empty data for this tag
+
+                # Get the existing data for this tag
+                tag_data = pisat_data.get(tag, {})
+
+                # Update only existing keys for this tag's payload
+                for key, value in config_payload.items():
+                    if key in tag_data:
+                        tag_data[key] = value  # Update the existing key
+                    else:
+                        print(f"Warning: Key '{key}' does not exist in the payload for tag '{tag}'. Ignoring it.")
+
+                # Save the updated data back to pisat.json for this tag
+                pisat_data[tag] = tag_data
+                with open("pisat.json", "w") as f:
+                    json.dump(pisat_data, f, indent=4)
+
+                # Print the updated data for this tag
+                print(f"Updated data for tag '{tag}': {json.dumps(tag_data, indent=4)}")
+
+                # Publish the updated data to the act_value topic for this tag
+                act_value_topic = f"{topic_base}/act_value"
+                client.publish(act_value_topic, json.dumps(tag_data))
+                print(f"Published updated data to {act_value_topic}")
+
+                # Publish the config message to the response topic for this tag
+                client.publish(f"{topic_base}/response", json.dumps(config_payload))
+                print(f"Copied config message to {topic_base}/response and updated act_value for tag '{tag}'")
+
+            else:  # Core topics
+                # Use d2meshdata.json for core topics
+                with open("d2meshdata.json", "r") as f:
+                    act_value_data = json.load(f)
+
+                # Get the existing act_value data
+                act_value = act_value_data.get("act_value", {})
+
+                # Update only existing keys for core topics
+                for key, value in config_payload.items():
+                    if key in act_value:
+                        act_value[key] = value  # Update the existing key
+                    else:
+                        print(f"Warning: Key '{key}' does not exist in act_value. Ignoring it.")
+
+                # Save the updated act_value data back to the file
+                with open("d2meshdata.json", "w") as f:
+                    json.dump({"act_value": act_value}, f, indent=4)
+
+                # Print the updated act_value data
+                print(f"Updated act_value data: {json.dumps(act_value, indent=4)}")
+
+                # Publish the updated act_value data to the act_value topic
+                act_value_topic = f"{topic_base}/act_value"
+                client.publish(act_value_topic, json.dumps(act_value))
+                print(f"Published updated act_value data to {act_value_topic}")
+
+                # Publish the config message to the response topic
+                client.publish(f"{topic_base}/response", json.dumps(config_payload))
+                print(f"Copied config message to {topic_base}/response and updated act_value")
+
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error: {e}")
+
+    # Call the config message handler with the parsed config payload and topic info
+    handle_config_message(config_payload, topic_base, tag)
+
+
+    # Function to handle request messages
+    def handle_request_message(request_payload, topic_base):
+        try:
             if isinstance(request_payload, list):
                 response_data = {}
 
@@ -121,15 +180,38 @@ def on_message(client, userdata, msg):
 
                 if response_data:
                     # Publish the response to the response topic
-                    client.publish("d2mesh/gate2DB48EC0/response", json.dumps(response_data))
-                    print(f"Published matching data to response topic: {json.dumps(response_data, indent=4)}")
+                    client.publish(f"{topic_base}/response", json.dumps(response_data))
+                    print(f"Published matching data to {topic_base}/response: {json.dumps(response_data, indent=4)}")
                 else:
                     print("No matching data found for the requested variables.")
             else:
                 print("Invalid request format. Expected a list of variables.")
-
         except json.JSONDecodeError:
             print("Error decoding the request payload.")
+
+    # Determine if the message is from a core or non-core topic and handle accordingly
+    if "config" in msg.topic:
+        config_payload = json.loads(msg.payload.decode())
+
+        if "lightpost" in msg.topic:  # Non-core (lightpost) topics
+            tag = msg.topic.split("/")[3]  # Extract tag
+            topic_base = f"d2mesh/gate2DB48EC0/lightpost/{tag}"
+            handle_config_message(config_payload, topic_base)
+        else:  # Core topics
+            topic_base = "d2mesh/gate2DB48EC0"
+            handle_config_message(config_payload, topic_base)
+
+    elif "request" in msg.topic:
+        request_payload = json.loads(msg.payload.decode())
+
+        if "lightpost" in msg.topic:  # Non-core (lightpost) topics
+            tag = msg.topic.split("/")[3]  # Extract tag
+            topic_base = f"d2mesh/gate2DB48EC0/lightpost/{tag}"
+            handle_request_message(request_payload, topic_base)
+        else:  # Core topics
+            topic_base = "d2mesh/gate2DB48EC0"
+            handle_request_message(request_payload, topic_base)
+
 
 # Function to manually publish to core config or request topics
 def manual_publish(client):
@@ -156,11 +238,15 @@ def manual_publish(client):
             toggle_timed_publishing()
 
         elif option == "6":
+            set_publish_interval()
+
+        elif option == "7":
             running = False
             break
 
         else:
             print("Invalid option.")
+
 
 # Function to publish a manually entered message to config topic
 def publish_to_config(client, core=True):
@@ -190,6 +276,7 @@ def publish_to_config(client, core=True):
     except json.JSONDecodeError:
         print("Invalid JSON format.")
 
+
 # Function to publish to the request topic
 def publish_to_request(client, core=True):
     if core:
@@ -210,7 +297,7 @@ def publish_to_request(client, core=True):
             print(f"Error: {e}")
             return
 
-    payload = input("Enter the message payload (JSON format): ").strip()
+    payload = input("Enter the requested variables (JSON list format): ").strip()
     try:
         json_payload = json.loads(payload)
         client.publish(request_topic, json.dumps(json_payload))
@@ -218,59 +305,80 @@ def publish_to_request(client, core=True):
     except json.JSONDecodeError:
         print("Invalid JSON format.")
 
-# Function to toggle timed publishing on/off
-def toggle_timed_publishing():
-    global timed_publishing
-    if not timed_publishing:
-        print("Timed publishing is now ON.")
-        timed_publishing = True
-        threading.Thread(target=timed_publish, args=(client,), daemon=True).start()  # Start timed publishing in a thread
-    else:
-        print("Timed publishing is now OFF.")
-        timed_publishing = False
 
-# Function to handle timed publishing to act_value topics
-def timed_publish(client):
-    global timed_publishing
-    print("Timed publishing started.")
-    while timed_publishing:
-        for topic in act_value_payload.keys():
-            client.publish(f"d2mesh/gate2DB48EC0/act_value/{topic}", json.dumps(act_value_payload[topic]))
-            print(f"Published timed act_value data to topic: d2mesh/gate2DB48EC0/act_value/{topic}")
-            time.sleep(5)  # Adjust the interval as needed
-    print("Timed publishing stopped.")
-
-# Clear the console screen
+# Function to clear the terminal screen
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# Show options menu
+
+# Function to toggle timed publishing on or off
+def toggle_timed_publishing():
+    global timed_publishing
+    timed_publishing = not timed_publishing
+    print(f"Timed publishing {'enabled' if timed_publishing else 'disabled'}.")
+
+
+# Function to set the time interval for publishing
+def set_publish_interval():
+    global publish_interval
+    try:
+        interval = int(input("Enter the time interval for timed publishing (in seconds): ").strip())
+        if interval <= 0:
+            print("Time interval must be a positive number.")
+        else:
+            publish_interval = interval
+            print(f"Publish interval set to {publish_interval} seconds.")
+    except ValueError:
+        print("Invalid input. Please enter a positive integer.")
+
+
+# Function to display options menu
 def show_options_menu():
     print("\nOptions:")
-    print("1. Publish to core config topic")
-    print("2. Publish to core request topic")
-    print("3. Publish to non-core config topic")
-    print("4. Publish to non-core request topic")
+    print("1. Publish to core config")
+    print("2. Publish to core request")
+    print("3. Publish to non-core config")
+    print("4. Publish to non-core request")
     print("5. Toggle timed publishing")
-    print("6. Exit")
+    print("6. Set time interval for publishing")
+    print("7. Quit")
 
-# Main function to start the MQTT client
+
+# Function for timed publishing
+def timed_publish(client):
+    while running:
+        if timed_publishing:
+            for tag in tags:
+                response_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/response"
+                client.publish(response_topic, json.dumps(act_value_payload))
+                print(f"Published act_value to {response_topic}")
+
+            # If no tags are published, publish to the core topic
+            if not tags:
+                client.publish("d2mesh/gate2DB48EC0/response", json.dumps(act_value_payload))
+                print("Published act_value to core response topic")
+
+        time.sleep(publish_interval)
+
+
+# Main function
 def main():
-    global client
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
+
     client.connect(broker, port, 60)
 
-    # Start the client loop in a separate thread
-    client.loop_start()
+    # Start the MQTT client loop in a separate thread
+    threading.Thread(target=client.loop_forever, daemon=True).start()
 
-    try:
-        manual_publish(client)
-    finally:
-        client.loop_stop()
-        client.disconnect()
-        print("MQTT client disconnected.")
+    # Start the manual publish interface in the main thread
+    manual_publish(client)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        threading.Thread(target=timed_publish, daemon=True).start()
+        main()
+    except KeyboardInterrupt:
+        print("Program interrupted. Exiting.")
