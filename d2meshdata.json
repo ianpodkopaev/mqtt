@@ -1,7 +1,8 @@
 {
     "act_value": {
-        "Timestamp": 11,
-        "Longitude": 2,
-        "Latitude": 2
+        "Timestamp": 7,
+        "Voltage": 230,
+        "Power": 1200,
+        "Temperature": 24
     }
 }

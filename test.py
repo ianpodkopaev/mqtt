@@ -71,123 +71,116 @@ def on_connect(client, userdata, flags, rc):
 
 
 # Callback when a message is received
+# Callback when a message is received
 def on_message(client, userdata, msg):
     print(f"Message received from {msg.topic}: {msg.payload.decode()}")
 
-    # Parse payload as JSON
-    try:
-        config_payload = json.loads(msg.payload.decode())
-    except json.JSONDecodeError:
-        print(f"Failed to decode JSON from {msg.topic}")
-        return
+    def handle_request_message(request_payload, topic_base, core=True):
+        try:
+            # Determine the data file (core or non-core)
+            if core:
+                data_file = "d2meshdata.json"
+            else:
+                data_file = "pisat.json"
+                tag = topic_base.split("/")[-1]  # Fetch tag for non-core topics (device ID)
 
-    # Split topic to determine base and tag (if any)
-    topic_parts = msg.topic.split('/')
-    topic_base = '/'.join(topic_parts[:-1])  # Base topic without the last part
-    tag = topic_parts[3] if "lightpost" in topic_parts else None  # Get the tag if it's a non-core topic
+            # Load the data from the respective file
+            with open(data_file, "r") as f:
+                data = json.load(f)
+
+            # For non-core topics, fetch the data for the specific tag (device)
+            if not core:
+                act_value_data = data.get(tag, {})
+            else:
+                act_value_data = data.get("act_value", {})
+
+            response_data = {}
+            # Search for each requested variable in the data
+            for variable in request_payload:
+                if variable in act_value_data:
+                    response_data[variable] = act_value_data[variable]
+                else:
+                    print(
+                        f"Variable '{variable}' not found in the data for tag '{tag}'." if not core else f"Variable '{variable}' not found in the core data.")
+
+            if response_data:
+                # Publish the response to the response topic
+                client.publish(f"{topic_base}/response", json.dumps(response_data))
+                print(f"Published matching data to {topic_base}/response: {json.dumps(response_data, indent=4)}")
+            else:
+                print("No matching data found for the requested variables.")
+
+        except json.JSONDecodeError:
+            print("Error decoding the request payload.")
+        except FileNotFoundError:
+            print(f"Error: {data_file} not found.")
 
     # Function to handle config messages
-    def handle_config_message(config_payload, topic_base, tag=None):
+    def handle_config_message(config_payload, topic_base):
         try:
-            if tag:  # Non-core topics (lightpost)
-                # Load pisat.json for non-core topics
-                with open("pisat.json", "r") as f:
-                    pisat_data = json.load(f)
+            if "lightpost" in topic_base:  # Non-core (lightpost) topics update pisat.json
+                file_path = "pisat.json"
+            else:  # Core topics update d2meshdata.json
+                file_path = "d2meshdata.json"
 
-                # Check if the tag exists, if not initialize it
-                if tag not in pisat_data:
-                    pisat_data[tag] = {}  # Initialize empty data for this tag
+            # Load current data from the appropriate file
+            with open(file_path, "r") as f:
+                data = json.load(f)
 
-                # Get the existing data for this tag
-                tag_data = pisat_data.get(tag, {})
+            # Determine if it's core or non-core, and update the respective "act_value"
+            if "lightpost" in topic_base:  # Non-core topics in pisat.json
+                tag = msg.topic.split("/")[3]
+                act_value = data.get(tag, {})
+                act_value.update(config_payload)  # Update specific fields
+                data[tag] = act_value
+            else:  # Core topics in d2meshdata.json
+                act_value = data.get("act_value", {})
+                act_value.update(config_payload)  # Update specific fields
+                data["act_value"] = act_value
 
-                # Update only existing keys for this tag's payload
-                for key, value in config_payload.items():
-                    if key in tag_data:
-                        tag_data[key] = value  # Update the existing key
-                    else:
-                        print(f"Warning: Key '{key}' does not exist in the payload for tag '{tag}'. Ignoring it.")
+            # Save the updated data back to the respective file
+            with open(file_path, "w") as f:
+                json.dump(data, f, indent=4)
 
-                # Save the updated data back to pisat.json for this tag
-                pisat_data[tag] = tag_data
-                with open("pisat.json", "w") as f:
-                    json.dump(pisat_data, f, indent=4)
+            # Print the updated data
+            print(f"Updated data in {file_path}: {json.dumps(data, indent=4)}")
 
-                # Print the updated data for this tag
-                print(f"Updated data for tag '{tag}': {json.dumps(tag_data, indent=4)}")
+            # Publish the updated act_value data
+            act_value_topic = f"{topic_base}/act_value"
+            client.publish(act_value_topic, json.dumps(act_value))
+            print(f"Published updated data to {act_value_topic}")
 
-                # Publish the updated data to the act_value topic for this tag
-                act_value_topic = f"{topic_base}/act_value"
-                client.publish(act_value_topic, json.dumps(tag_data))
-                print(f"Published updated data to {act_value_topic}")
-
-                # Publish the config message to the response topic for this tag
-                client.publish(f"{topic_base}/response", json.dumps(config_payload))
-                print(f"Copied config message to {topic_base}/response and updated act_value for tag '{tag}'")
-
-            else:  # Core topics
-                # Use d2meshdata.json for core topics
-                with open("d2meshdata.json", "r") as f:
-                    act_value_data = json.load(f)
-
-                # Get the existing act_value data
-                act_value = act_value_data.get("act_value", {})
-
-                # Update only existing keys for core topics
-                for key, value in config_payload.items():
-                    if key in act_value:
-                        act_value[key] = value  # Update the existing key
-                    else:
-                        print(f"Warning: Key '{key}' does not exist in act_value. Ignoring it.")
-
-                # Save the updated act_value data back to the file
-                with open("d2meshdata.json", "w") as f:
-                    json.dump({"act_value": act_value}, f, indent=4)
-
-                # Print the updated act_value data
-                print(f"Updated act_value data: {json.dumps(act_value, indent=4)}")
-
-                # Publish the updated act_value data to the act_value topic
-                act_value_topic = f"{topic_base}/act_value"
-                client.publish(act_value_topic, json.dumps(act_value))
-                print(f"Published updated act_value data to {act_value_topic}")
-
-                # Publish the config message to the response topic
-                client.publish(f"{topic_base}/response", json.dumps(config_payload))
-                print(f"Copied config message to {topic_base}/response and updated act_value")
+            # Publish the config message to the response topic
+            client.publish(f"{topic_base}/response", json.dumps(config_payload))
+            print(f"Copied config message to {topic_base}/response and updated act_value")
 
         except (FileNotFoundError, json.JSONDecodeError) as e:
             print(f"Error: {e}")
 
-    # Call the config message handler with the parsed config payload and topic info
-    handle_config_message(config_payload, topic_base, tag)
+    # Handle config or request messages based on the topic
+    if "config" in msg.topic:
+        config_payload = json.loads(msg.payload.decode())
+
+        if "lightpost" in msg.topic:  # Non-core (lightpost) topics
+            tag = msg.topic.split("/")[3]  # Extract tag
+            topic_base = f"d2mesh/gate2DB48EC0/lightpost/{tag}"
+            handle_config_message(config_payload, topic_base)
+        else:  # Core topics
+            topic_base = "d2mesh/gate2DB48EC0"
+            handle_config_message(config_payload, topic_base)
+
+    elif "request" in msg.topic:
+        request_payload = json.loads(msg.payload.decode())
+
+        if "lightpost" in msg.topic:  # Non-core (lightpost) topics
+            tag = msg.topic.split("/")[3]  # Extract tag
+            topic_base = f"d2mesh/gate2DB48EC0/lightpost/{tag}"
+            handle_request_message(request_payload, topic_base)
+        else:  # Core topics
+            topic_base = "d2mesh/gate2DB48EC0"
+            handle_request_message(request_payload, topic_base)
 
 
-    # Function to handle request messages
-    def handle_request_message(request_payload, topic_base):
-        try:
-            if isinstance(request_payload, list):
-                response_data = {}
-
-                # Load the updated act_value data
-                with open("d2meshdata.json", "r") as f:
-                    act_value_data = json.load(f)
-
-                # Search for each requested variable in the act_value data
-                for variable in request_payload:
-                    if variable in act_value_data.get("act_value", {}):
-                        response_data[variable] = act_value_data["act_value"][variable]
-
-                if response_data:
-                    # Publish the response to the response topic
-                    client.publish(f"{topic_base}/response", json.dumps(response_data))
-                    print(f"Published matching data to {topic_base}/response: {json.dumps(response_data, indent=4)}")
-                else:
-                    print("No matching data found for the requested variables.")
-            else:
-                print("Invalid request format. Expected a list of variables.")
-        except json.JSONDecodeError:
-            print("Error decoding the request payload.")
 
     # Determine if the message is from a core or non-core topic and handle accordingly
     if "config" in msg.topic:

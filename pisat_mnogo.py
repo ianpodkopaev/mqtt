@@ -1,172 +1,172 @@
 import paho.mqtt.client as mqtt
 import json
-import time
 import threading
+import time
 
-# Define the MQTT broker details
-broker = 'localhost'
-port = 1883
-timed_publishing = False  # Global flag for timed publishing
 
-# Callback when the client receives a CONNACK response from the server
+# Load data from d2meshdata.json
+def load_d2meshdata():
+    try:
+        with open('d2meshdata.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Error: d2meshdata.json not found.")
+        return None
+    except json.JSONDecodeError:
+        print("Error: d2meshdata.json contains invalid JSON.")
+        return None
+
+
+# Function to handle the lookup of requested variables
+def lookup_variable(variable, data):
+    if 'act_value' in data and variable in data['act_value']:
+        return data['act_value'][variable]
+    else:
+        print(f"Variable '{variable}' not found in the core data.")
+        return None
+
+
+# MQTT Callbacks
 def on_connect(client, userdata, flags, rc):
-    print(f"Connected with result code {rc}")
-
-# Callback when a PUBLISH message is received from the server
-def on_message(client, userdata, msg):
-    print(f"Message received from topic {msg.topic}: {msg.payload.decode()}")
-
-# Create a new MQTT client instance
-client = mqtt.Client()
-
-# Assign event callbacks
-client.on_connect = on_connect
-client.on_message = on_message
-
-# Connect to the MQTT broker
-client.connect(broker, port, 60)
-
-# Load tags from the generated_topics.txt file
-try:
-    with open("generated_topics.txt", "r") as file:
-        tags = [line.strip() for line in file.readlines() if line.strip()]
-except FileNotFoundError as e:
-    print(f"Error: Could not find 'generated_topics.txt' file: {e}")
-    exit(1)
-
-# Load the JSON payloads from the file
-try:
-    with open("pisat.json", "r") as file:
-        data = json.load(file)
-        payloads = data.get("payloads", [])
-except (json.JSONDecodeError, FileNotFoundError) as e:
-    print(f"Error loading JSON file: {e}")
-    exit(1)
-
-# Present options for publishing
-print("\nChoose an option:")
-print("1. Publish to all topics")
-print("2. Choose one topic")
-print("3. Enter a range of topics (e.g., 'from-to')")
-print("4. Publish to specific tags (e.g., 'tag1,tag2,...')")
-print("5. Toggle timed publishing (on/off)")
-option = input("Enter your choice (1, 2, 3, 4, or 5): ").strip()
-
-# Function to subscribe to and publish to specific tags
-def subscribe_and_publish_to_tags(selected_tags):
-    # Subscribe to selected topics
-    for tag in selected_tags:
-        act_value_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/act_value"
-        client.subscribe(act_value_topic)
-        print(f"Subscribed to: {act_value_topic}")
-
-    # Publish to selected topics
-    for payload in payloads:
-        cleaned_payload = {key: value for key, value in payload.items() if value is not None}
-        for tag in selected_tags:
-            act_value_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/act_value"
-            client.publish(act_value_topic, json.dumps(cleaned_payload))
-            print(f"Published to topic: {act_value_topic}")
-            print(f"Payload: {json.dumps(cleaned_payload, indent=4)}")
-        time.sleep(1)
-
-# Function to toggle timed publishing on/off
-def toggle_timed_publishing():
-    global timed_publishing
-    if not timed_publishing:
-        print("Timed publishing is now ON.")
-        timed_publishing = True
-        threading.Thread(target=timed_publish, args=(client,), daemon=True).start()  # Start timed publishing in a thread
+    if rc == 0:
+        print("Successfully connected to the broker.")
+        # Subscribe to core and non-core topics
+        client.subscribe("d2mesh/gate2DB48EC0/request")
+        print("Subscribed to core topics and lightpost topics for each tag.")
     else:
-        print("Timed publishing is now OFF.")
-        timed_publishing = False  # This will stop the timed_publish loop
+        print(f"Failed to connect with result code {rc}")
 
-# Function to handle timed publishing every minute (adjustable)
-def timed_publish(client):
-    global timed_publishing
-    print("Timed publishing started.")
 
-    # Interval selection
-    interval = 60  # Default to 1 minute
-    custom_interval = input("Enter custom interval (in seconds): ").strip()
-    try:
-        interval = int(custom_interval)
-    except ValueError:
-        print("Invalid custom interval. Using default 60 seconds.")
-
-    while timed_publishing:
-        for tag in tags:  # Iterate through all tags
-            config_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/config"
-            for payload in payloads:  # Iterate through the list of payloads
-                if isinstance(payload, dict):  # Ensure it's a dictionary
-                    message = json.dumps(payload)
-                    client.publish(config_topic, message)
-                    print(f"Published timed message to {config_topic}: {message}")
-
-                # Check if timed publishing has been turned off
-                if not timed_publishing:
-                    print("Timed publishing has been stopped.")
-                    return  # Exit the function if stopped
-
-            time.sleep(interval)  # Sleep after publishing all payloads for the current tag
-
-# Handle the user's choice
-if option == "1":
-    print("Subscribing and publishing to all topics...")
-    subscribe_and_publish_to_tags(tags)
-
-elif option == "2":
-    print("\nAvailable tags:")
-    for index, tag in enumerate(tags, 1):
-        print(f"{index}. {tag}")
-
-    tag_choice = input("Enter the number of the tag to publish to: ").strip()
-    try:
-        tag_index = int(tag_choice) - 1
-        if tag_index < 0 or tag_index >= len(tags):
-            raise ValueError("Invalid choice")
-        selected_tag = [tags[tag_index]]
-        subscribe_and_publish_to_tags(selected_tag)
-    except ValueError as e:
-        print(f"Error: {e}")
-        exit(1)
-
-elif option == "3":
-    print(f"\nAvailable tags range from: {tags[0]} to {tags[-1]}")
-    range_input = input("Enter the tag range (e.g., 'D202E7DF0000-D202E7DF00FF'): ").strip()
+def on_message(client, userdata, message):
+    print(f"Message received from {message.topic}: {message.payload.decode()}")
 
     try:
-        start_tag, end_tag = range_input.split('-')
-        # Filter tags based on the provided range
-        selected_tags = [tag for tag in tags if start_tag <= tag <= end_tag]
-        if not selected_tags:
-            print("No tags found in the specified range.")
+        requested_vars = json.loads(message.payload.decode())
+
+        data = load_d2meshdata()
+        if data:
+            for var in requested_vars:
+                value = lookup_variable(var, data)
+                if value is not None:
+                    print(f"Found {var}: {value}")
+                else:
+                    print(f"No matching data found for {var}.")
         else:
-            print(f"Subscribing and publishing to tags from {start_tag} to {end_tag}")
-            subscribe_and_publish_to_tags(selected_tags)
-    except ValueError:
-        print("Invalid range input.")
-        exit(1)
+            print("Failed to load data from d2meshdata.json.")
 
-elif option == "4":
-    print("\nAvailable tags:")
-    for index, tag in enumerate(tags, 1):
-        print(f"{index}. {tag}")
+    except json.JSONDecodeError:
+        print("Error: Received message is not valid JSON.")
 
-    tags_input = input("Enter the tags to publish to (comma-separated, e.g., 'D202E7DF0001,D202E7DF0002'): ").strip()
-    selected_tags = [tag.strip() for tag in tags_input.split(',') if tag.strip() in tags]
-    if not selected_tags:
-        print("No valid tags found in the input.")
+
+def publish_data(client, topic, variables):
+    data = load_d2meshdata()
+    if data:
+        result = {}
+        for var in variables:
+            value = lookup_variable(var, data)
+            if value is not None:
+                result[var] = value
+        client.publish(topic, json.dumps(result))
+        print(f"Published to {topic}: {json.dumps(result)}")
     else:
-        print(f"Subscribing and publishing to selected tags: {', '.join(selected_tags)}")
-        subscribe_and_publish_to_tags(selected_tags)
+        print("Failed to load data for publishing.")
 
-elif option == "5":
-    toggle_timed_publishing()
 
-else:
-    print("Invalid option selected.")
-    exit(1)
+# Timed publishing function
+def timed_publish(client, interval):
+    while True:
+        data = load_d2meshdata()
+        if data:
+            client.publish("d2mesh/gate2DB48EC0/act_value", json.dumps(data['act_value']))
+            print("Published act_value data on interval.")
+        time.sleep(interval)
 
-# Keep the MQTT client running indefinitely
-client.loop_forever()
+
+# User interface and menu handling
+def menu(client):
+    while True:
+        print("\nOptions:")
+        print("1. Publish to core config")
+        print("2. Publish to core request")
+        print("3. Publish to non-core config")
+        print("4. Publish to non-core request")
+        print("5. Toggle timed publishing")
+        print("6. Set time interval for publishing")
+        print("7. Quit")
+
+        choice = input("Choose an option (1, 2, 3, or 4): ")
+
+        if choice == '1':
+            variables = input("Enter the requested variables (JSON list format): ")
+            variables = json.loads(variables)
+            publish_data(client, "d2mesh/gate2DB48EC0/config", variables)
+
+        elif choice == '2':
+            variables = input("Enter the requested variables (JSON list format): ")
+            variables = json.loads(variables)
+            publish_data(client, "d2mesh/gate2DB48EC0/request", variables)
+
+        elif choice == '3':
+            variables = input("Enter the requested variables (JSON list format): ")
+            variables = json.loads(variables)
+            publish_data(client, "d2mesh/gate2DB48EC0/non-core-config", variables)
+
+        elif choice == '4':
+            variables = input("Enter the requested variables (JSON list format): ")
+            variables = json.loads(variables)
+            publish_data(client, "d2mesh/gate2DB48EC0/non-core-request", variables)
+
+        elif choice == '5':
+            toggle_timed_publish(client)
+
+        elif choice == '6':
+            interval = input("Set new time interval (in seconds): ")
+            interval = int(interval)
+            change_time_interval(interval)
+
+        elif choice == '7':
+            print("Exiting the program...")
+            break
+        else:
+            print("Invalid option, please try again.")
+
+
+# Toggling timed publishing and changing interval
+timed_publishing_enabled = False
+time_interval = 10
+
+
+def toggle_timed_publish(client):
+    global timed_publishing_enabled
+    timed_publishing_enabled = not timed_publishing_enabled
+    if timed_publishing_enabled:
+        threading.Thread(target=timed_publish, args=(client, time_interval)).start()
+        print(f"Timed publishing enabled with interval {time_interval} seconds.")
+    else:
+        print("Timed publishing disabled.")
+
+
+def change_time_interval(new_interval):
+    global time_interval
+    time_interval = new_interval
+    print(f"Time interval changed to {time_interval} seconds.")
+
+
+# Main function
+def main():
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    # Start MQTT connection
+    client.connect("mqtt-broker-url", 1883, 60)
+
+    # Start menu in a separate thread
+    threading.Thread(target=menu, args=(client,)).start()
+
+    # Blocking call to process network traffic and handle reconnecting
+    client.loop_forever()
+
+
+if __name__ == '__main__':
+    main()
