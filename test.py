@@ -32,6 +32,16 @@ except FileNotFoundError as e:
     print(f"Error: Could not find 'generated_topics.txt' file: {e}")
     exit(1)
 
+# Load the JSON payloads from the file
+try:
+    with open("badpisat.json", "r") as file:
+        data = json.load(file)
+        payloads = data.get("payloads", [])
+except (json.JSONDecodeError, FileNotFoundError) as e:
+    print(f"Error loading JSON file: {e}")
+    exit(1)
+
+
 
 # Callback when the client receives a CONNACK response from the server
 def on_connect(client, userdata, flags, rc):
@@ -228,14 +238,12 @@ def manual_publish(client):
             publish_to_request(client, core=False)
 
         elif option == "5":
-            toggle_timed_publishing()
+            toggle_timed_publishing(client, payloads)
 
         elif option == "6":
-            set_publish_interval()
-
-        elif option == "7":
             running = False
             break
+
 
         else:
             print("Invalid option.")
@@ -303,27 +311,45 @@ def publish_to_request(client, core=True):
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-
-# Function to toggle timed publishing on or off
-def toggle_timed_publishing():
+# Function to toggle timed publishing on/off
+def toggle_timed_publishing(client, payloads):
     global timed_publishing
-    timed_publishing = not timed_publishing
-    print(f"Timed publishing {'enabled' if timed_publishing else 'disabled'}.")
+    if not timed_publishing:
+        print("Timed publishing is now ON.")
+        timed_publishing = True
+        threading.Thread(target=timed_publish, args=(client, payloads), daemon=True).start()  # Start timed publishing in a thread
+    else:
+        print("Timed publishing is now OFF.")
+        timed_publishing = False
 
+# Ensure that timed_publish is updated to expect two parameters
+def timed_publish(client, payloads):
+    global timed_publishing
+    print("Timed publishing started.")
 
-# Function to set the time interval for publishing
-def set_publish_interval():
-    global publish_interval
+    # Interval selection
+    interval = 60  # Default to 1 minute
+    custom_interval = input("Enter custom interval (in seconds): ").strip()
     try:
-        interval = int(input("Enter the time interval for timed publishing (in seconds): ").strip())
-        if interval <= 0:
-            print("Time interval must be a positive number.")
-        else:
-            publish_interval = interval
-            print(f"Publish interval set to {publish_interval} seconds.")
+        interval = int(custom_interval)
     except ValueError:
-        print("Invalid input. Please enter a positive integer.")
+        print("Invalid custom interval. Using default 60 seconds.")
 
+    while timed_publishing:
+        for tag in tags:  # Iterate through all tags
+            act_value_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/act_value"
+            for payload in payloads:  # Iterate through the list of payloads
+                if isinstance(payload, dict):  # Ensure it's a dictionary
+                    message = json.dumps(payload)
+                    client.publish(act_value_topic, message)
+                    print(f"Published timed message to {act_value_topic}: {message}")
+
+                # Check if timed publishing has been turned off
+                if not timed_publishing:
+                    print("Timed publishing has been stopped.")
+                    return  # Exit the function if stopped
+
+            time.sleep(interval)  # Sleep after publishing all payloads for the current tag
 
 # Function to display options menu
 def show_options_menu():
@@ -333,25 +359,10 @@ def show_options_menu():
     print("3. Publish to non-core config")
     print("4. Publish to non-core request")
     print("5. Toggle timed publishing")
-    print("6. Set time interval for publishing")
-    print("7. Quit")
+    print("6. Quit")
 
 
-# Function for timed publishing
-def timed_publish(client):
-    while running:
-        if timed_publishing:
-            for tag in tags:
-                response_topic = f"d2mesh/gate2DB48EC0/lightpost/{tag}/response"
-                client.publish(response_topic, json.dumps(act_value_payload))
-                print(f"Published act_value to {response_topic}")
 
-            # If no tags are published, publish to the core topic
-            if not tags:
-                client.publish("d2mesh/gate2DB48EC0/response", json.dumps(act_value_payload))
-                print("Published act_value to core response topic")
-
-        time.sleep(publish_interval)
 
 
 # Main function

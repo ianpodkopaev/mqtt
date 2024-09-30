@@ -1,0 +1,13 @@
+{
+    "payloads": [
+        { "Timestamp": 909,
+        "Longitude": 2222,
+        "Latitude": 2,
+        "Voltage": 380,
+        "ActPower": 623,
+        "Voltage_1": 210,
+        "LightPower": 100,
+        "DeviceMode": 1}
+
+    ]
+}
